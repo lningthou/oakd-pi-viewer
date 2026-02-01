@@ -63,69 +63,41 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     log.info(f"RGB remux complete: {output_path}")
 
 
+_MIN_DEPTH_MM = 200
 _MAX_DEPTH_MM = 1000
-_MIN_DEPTH_MM = 100
+_DEPTH_RANGE = float(_MAX_DEPTH_MM - _MIN_DEPTH_MM)
 
-# Morphological kernels (built once)
-_KERNEL_5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-_KERNEL_7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-_KERNEL_31 = np.ones((31, 31), dtype=np.uint8)
+# Small morphological kernel for optional hole cleanup
+_KERNEL_3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
 
 def _colorize_depth_frame(depth_raw: np.ndarray) -> np.ndarray:
-    """Process a raw uint16 depth frame into a BGR colorized image.
+    """Colorize a uint16 depth frame (mm) using turbo colormap.
 
-    Replicates the Luxonis Oak Viewer pipeline:
-    1. Threshold to 100-1000mm range
-    2. Median filter (5x5) to reduce stereo noise
-    3. Hole filling via inverted dilation (fills with nearest depth)
-    4. Bilateral filter (edge-preserving smoothing)
-    5. Final median to clean artifacts
-    6. JET colormap (close=warm, far=cool, invalid=black)
+    Clips to display range, normalizes valid pixels to 0-255,
+    applies light median cleanup, then turbo colormap.
+    Invalid pixels are black.
     """
-    depth = depth_raw.copy()
-    max_mm = float(_MAX_DEPTH_MM)
+    d = depth_raw
+    valid = (d > 0) & (d >= _MIN_DEPTH_MM) & (d <= _MAX_DEPTH_MM)
 
-    # 1. Threshold
-    depth[depth > _MAX_DEPTH_MM] = 0
-    depth[depth < _MIN_DEPTH_MM] = 0
+    # Normalize valid pixels to uint8
+    u8 = np.zeros(d.shape, dtype=np.uint8)
+    u8[valid] = np.clip((d[valid].astype(np.float32) - _MIN_DEPTH_MM) * 255.0 / _DEPTH_RANGE, 0, 255).astype(np.uint8)
 
-    # 2. Median 5x5
-    depth_f = cv2.medianBlur(depth.astype(np.float32), 5)
+    # Light cleanup on normalized map
+    u8 = cv2.medianBlur(u8, 3)
 
-    # 3. Hole filling: invert depth so close=HIGH, dilate (fills with closest), invert back
-    valid = depth_f > 0
-    inverted = np.zeros_like(depth_f)
-    inverted[valid] = max_mm - depth_f[valid]
+    # Optional: morphological close on valid mask to reduce tiny holes
+    valid_closed = cv2.morphologyEx(valid.view(np.uint8), cv2.MORPH_CLOSE, _KERNEL_3).astype(bool)
 
-    inverted = cv2.dilate(inverted, _KERNEL_5, iterations=1)
-    inverted = cv2.morphologyEx(inverted, cv2.MORPH_CLOSE, _KERNEL_7)
-    still_empty = inverted == 0
-    big_dilated = cv2.dilate(inverted, _KERNEL_31, iterations=1)
-    inverted[still_empty] = big_dilated[still_empty]
-
-    filled = np.zeros_like(inverted)
-    has_val = inverted > 0
-    filled[has_val] = max_mm - inverted[has_val]
-    filled = filled.clip(0, max_mm)
-
-    # 4. Bilateral filter (edge-preserving smoothing)
-    filled = cv2.bilateralFilter(filled, d=9, sigmaColor=75, sigmaSpace=15)
-
-    # 5. Final median
-    filled = cv2.medianBlur(filled, 5)
-
-    # 6. JET colormap
-    valid_f = filled > 50
-    norm = np.zeros(filled.shape, dtype=np.uint8)
-    norm[valid_f] = (255 - (filled[valid_f] / max_mm * 255).clip(0, 255)).astype(np.uint8)
-    colored = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
-    colored[~valid_f] = [0, 0, 0]
-    return colored
+    vis = cv2.applyColorMap(u8, cv2.COLORMAP_TURBO)
+    vis[~valid_closed] = [0, 0, 0]
+    return vis
 
 
 def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback = _noop_progress):
-    """Extract LZ4-compressed depth frames, filter, fill holes, apply JET colormap, encode to MP4."""
+    """Extract LZ4-compressed depth frames, colorize with turbo, encode to H.264 MP4."""
     total = count_messages(mcap_path, "/oak/depth")
     if total == 0:
         raise ValueError("No depth messages found in MCAP")
