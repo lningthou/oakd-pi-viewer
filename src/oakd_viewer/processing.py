@@ -63,18 +63,20 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     log.info(f"RGB remux complete: {output_path}")
 
 
-def _build_depth_lut(max_mm: int = 3000) -> np.ndarray:
-    """Precompute a uint16→BGR lookup table using turbo colormap.
+def _build_depth_lut(max_mm: int = 1000) -> np.ndarray:
+    """Precompute a uint16→BGR lookup table using JET colormap.
 
+    Matches the Luxonis Oak Viewer default visualization.
     Returns a (65536, 3) uint8 array.
-    Index 0 maps to black (no depth return) — standard DepthAI convention.
-    Non-zero values are mapped through turbo colormap with close=warm, far=cool.
+    Index 0 maps to black (no depth return).
+    Close objects = warm (red/yellow), far = cool (green/cyan/blue).
+    Values beyond max_mm clip to the far end of the colormap.
     """
     indices = np.arange(65536, dtype=np.float32)
     normalized = np.clip(indices / max_mm, 0, 1) * 255
-    # Invert: close objects (low mm) = high value = warm colors
+    # Invert: close (low mm) = 255 (red end of JET), far = 0 (blue end)
     gray = (255 - normalized).astype(np.uint8)
-    colored = cv2.applyColorMap(gray.reshape(-1, 1), cv2.COLORMAP_TURBO)
+    colored = cv2.applyColorMap(gray.reshape(-1, 1), cv2.COLORMAP_JET)
     lut = colored.reshape(-1, 3)  # (65536, 3) BGR
     # Index 0 = no data = black
     lut[0] = [0, 0, 0]
