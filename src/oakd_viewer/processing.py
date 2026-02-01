@@ -101,6 +101,8 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
+        "-g", "15",
+        "-keyint_min", "15",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         output_path.as_posix(),

@@ -292,8 +292,14 @@
     }
   });
 
+  let depthSeeking = false;
+
+  videoDepth.addEventListener("seeked", () => { depthSeeking = false; });
+
   function syncDepth() {
-    if (Math.abs(videoDepth.currentTime - videoRgb.currentTime) > 0.05) {
+    if (depthSeeking) return;
+    if (Math.abs(videoDepth.currentTime - videoRgb.currentTime) > 0.1) {
+      depthSeeking = true;
       videoDepth.currentTime = videoRgb.currentTime;
     }
   }
