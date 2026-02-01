@@ -90,19 +90,37 @@ async def start_processing(recording_id: str):
 
 
 async def _run_processing(job_id: str, recording_id: str, event_queue: asyncio.Queue):
-    """Background task: download MCAP, process, cache results."""
+    """Background task: fetch pre-processed files from S3 if available, otherwise download MCAP and process."""
     try:
         cache.ensure_dir(recording_id)
+
+        # Check if pre-processed outputs exist in S3 (from background pre-processor)
+        await event_queue.put({"stage": "download", "progress": 0, "detail": "Checking for pre-processed files"})
+        listing = await asyncio.to_thread(s3.list_prefix, recording_id)
+        s3_files = {f["name"]: f for f in listing.get("files", [])}
+
+        if "rgb.mp4" in s3_files and "depth.mp4" in s3_files and "imu.json" in s3_files:
+            # Pre-processed! Just download the small output files
+            await event_queue.put({"stage": "download", "progress": 0.2, "detail": "Downloading pre-processed RGB"})
+            await asyncio.to_thread(s3.download_file, s3_files["rgb.mp4"]["key"], cache.get_rgb_path(recording_id))
+
+            await event_queue.put({"stage": "download", "progress": 0.6, "detail": "Downloading pre-processed depth"})
+            await asyncio.to_thread(s3.download_file, s3_files["depth.mp4"]["key"], cache.get_depth_path(recording_id))
+
+            await event_queue.put({"stage": "download", "progress": 0.9, "detail": "Downloading IMU data"})
+            await asyncio.to_thread(s3.download_file, s3_files["imu.json"]["key"], cache.get_imu_path(recording_id))
+
+            await event_queue.put({"stage": "done", "progress": 1.0, "detail": "Ready"})
+            return
+
+        # No pre-processed files — fall back to full MCAP download + process
         mcap_path = cache.get_mcap_path(recording_id)
 
-        # Find the .mcap file in the recording folder
         # Remove stale 0-byte files from previous failed downloads
         if mcap_path.exists() and mcap_path.stat().st_size == 0:
             mcap_path.unlink()
 
         if not mcap_path.exists():
-            await event_queue.put({"stage": "download", "progress": 0, "detail": "Finding MCAP file"})
-            listing = await asyncio.to_thread(s3.list_prefix, recording_id)
             mcap_key = None
             mcap_size = 0
             for f in listing.get("files", []):
