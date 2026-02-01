@@ -63,32 +63,69 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     log.info(f"RGB remux complete: {output_path}")
 
 
-def _build_depth_lut(max_mm: int = 1000) -> np.ndarray:
-    """Precompute a uint16→BGR lookup table using JET colormap.
+_MAX_DEPTH_MM = 1000
+_MIN_DEPTH_MM = 100
 
-    Matches the Luxonis Oak Viewer default visualization.
-    Returns a (65536, 3) uint8 array.
-    Index 0 maps to black (no depth return).
-    Close objects = warm (red/yellow), far = cool (green/cyan/blue).
-    Values beyond max_mm clip to the far end of the colormap.
+# Morphological kernels (built once)
+_KERNEL_5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+_KERNEL_7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+_KERNEL_31 = np.ones((31, 31), dtype=np.uint8)
+
+
+def _colorize_depth_frame(depth_raw: np.ndarray) -> np.ndarray:
+    """Process a raw uint16 depth frame into a BGR colorized image.
+
+    Replicates the Luxonis Oak Viewer pipeline:
+    1. Threshold to 100-1000mm range
+    2. Median filter (5x5) to reduce stereo noise
+    3. Hole filling via inverted dilation (fills with nearest depth)
+    4. Bilateral filter (edge-preserving smoothing)
+    5. Final median to clean artifacts
+    6. JET colormap (close=warm, far=cool, invalid=black)
     """
-    indices = np.arange(65536, dtype=np.float32)
-    normalized = np.clip(indices / max_mm, 0, 1) * 255
-    # Invert: close (low mm) = 255 (red end of JET), far = 0 (blue end)
-    gray = (255 - normalized).astype(np.uint8)
-    colored = cv2.applyColorMap(gray.reshape(-1, 1), cv2.COLORMAP_JET)
-    lut = colored.reshape(-1, 3)  # (65536, 3) BGR
-    # Index 0 = no data = black
-    lut[0] = [0, 0, 0]
-    return lut
+    depth = depth_raw.copy()
+    max_mm = float(_MAX_DEPTH_MM)
 
+    # 1. Threshold
+    depth[depth > _MAX_DEPTH_MM] = 0
+    depth[depth < _MIN_DEPTH_MM] = 0
 
-# Build once at import time
-_DEPTH_LUT = _build_depth_lut()
+    # 2. Median 5x5
+    depth_f = cv2.medianBlur(depth.astype(np.float32), 5)
+
+    # 3. Hole filling: invert depth so close=HIGH, dilate (fills with closest), invert back
+    valid = depth_f > 0
+    inverted = np.zeros_like(depth_f)
+    inverted[valid] = max_mm - depth_f[valid]
+
+    inverted = cv2.dilate(inverted, _KERNEL_5, iterations=1)
+    inverted = cv2.morphologyEx(inverted, cv2.MORPH_CLOSE, _KERNEL_7)
+    still_empty = inverted == 0
+    big_dilated = cv2.dilate(inverted, _KERNEL_31, iterations=1)
+    inverted[still_empty] = big_dilated[still_empty]
+
+    filled = np.zeros_like(inverted)
+    has_val = inverted > 0
+    filled[has_val] = max_mm - inverted[has_val]
+    filled = filled.clip(0, max_mm)
+
+    # 4. Bilateral filter (edge-preserving smoothing)
+    filled = cv2.bilateralFilter(filled, d=9, sigmaColor=75, sigmaSpace=15)
+
+    # 5. Final median
+    filled = cv2.medianBlur(filled, 5)
+
+    # 6. JET colormap
+    valid_f = filled > 50
+    norm = np.zeros(filled.shape, dtype=np.uint8)
+    norm[valid_f] = (255 - (filled[valid_f] / max_mm * 255).clip(0, 255)).astype(np.uint8)
+    colored = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
+    colored[~valid_f] = [0, 0, 0]
+    return colored
 
 
 def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback = _noop_progress):
-    """Extract LZ4-compressed depth frames, filter, apply turbo colormap, encode to H.264 MP4."""
+    """Extract LZ4-compressed depth frames, filter, fill holes, apply JET colormap, encode to MP4."""
     total = count_messages(mcap_path, "/oak/depth")
     if total == 0:
         raise ValueError("No depth messages found in MCAP")
@@ -105,7 +142,7 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
         "-i", "pipe:0",
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "28",
+        "-crf", "23",
         "-g", "15",
         "-keyint_min", "15",
         "-pix_fmt", "yuv420p",
@@ -115,18 +152,13 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     frame_bytes = w * h * 2  # uint16
-    lut = _DEPTH_LUT
 
     try:
         for i, (ts, data) in enumerate(iter_messages(mcap_path, "/oak/depth")):
             raw = lz4f.decompress(data)
             depth = np.frombuffer(raw[:frame_bytes], dtype=np.uint16).reshape(h, w)
 
-            # Spatial filtering to reduce stereo matching noise
-            depth = cv2.medianBlur(depth, 5)
-
-            # LUT colorization (turbo colormap, zero=black)
-            colored = lut[depth]
+            colored = _colorize_depth_frame(depth)
             proc.stdin.write(colored.tobytes())
 
             if i % 30 == 0:
