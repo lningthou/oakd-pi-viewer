@@ -1,4 +1,4 @@
-"""Processing pipeline: transcode H.265→H.264, depth→colormap MP4, IMU→JSON."""
+"""Processing pipeline: remux H.265→MP4, depth→colormap MP4, IMU→JSON."""
 
 import asyncio
 import json
@@ -26,24 +26,22 @@ def _noop_progress(stage: str, progress: float, detail: str):
 
 
 def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback = _noop_progress):
-    """Extract H.265 NAL units from /oak/rgb messages and transcode to H.264 MP4."""
+    """Extract H.265 NAL units from /oak/rgb messages and remux into MP4 (no transcode)."""
     total = count_messages(mcap_path, "/oak/rgb")
     if total == 0:
         raise ValueError("No RGB messages found in MCAP")
 
     fps = settings.camera_fps
-    w, h = settings.resolution
 
+    # Remux: copy the H.265 bitstream directly into MP4 container — no re-encoding
     cmd = [
         "ffmpeg", "-y",
         "-f", "hevc",
         "-r", str(fps),
         "-i", "pipe:0",
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
+        "-c:v", "copy",
         "-movflags", "+faststart",
+        "-tag:v", "hvc1",
         output_path.as_posix(),
     ]
 
@@ -51,7 +49,7 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     try:
         for i, (ts, data) in enumerate(iter_messages(mcap_path, "/oak/rgb")):
             proc.stdin.write(data)
-            if i % 30 == 0:
+            if i % 100 == 0:
                 progress("rgb", i / total, f"Frame {i}/{total}")
     finally:
         proc.stdin.close()
@@ -59,10 +57,10 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
 
     if proc.returncode != 0:
         stderr = proc.stderr.read().decode(errors="replace")
-        raise RuntimeError(f"ffmpeg RGB transcode failed (rc={proc.returncode}): {stderr[-500:]}")
+        raise RuntimeError(f"ffmpeg RGB remux failed (rc={proc.returncode}): {stderr[-500:]}")
 
     progress("rgb", 1.0, "Done")
-    log.info(f"RGB transcode complete: {output_path}")
+    log.info(f"RGB remux complete: {output_path}")
 
 
 def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback = _noop_progress):
@@ -97,8 +95,7 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
             raw = lz4f.decompress(data)
             depth = np.frombuffer(raw[:frame_bytes], dtype=np.uint16).reshape(h, w)
 
-            # Normalize to 0-255 for visualization
-            # Clip at 10m (10000mm) to get better contrast for typical indoor scenes
+            # Clip at 10m (10000mm) for better indoor contrast
             clipped = np.clip(depth, 0, 10000)
             normalized = (clipped / 10000 * 255).astype(np.uint8)
 
@@ -114,7 +111,7 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
 
     if proc.returncode != 0:
         stderr = proc.stderr.read().decode(errors="replace")
-        raise RuntimeError(f"ffmpeg depth transcode failed (rc={proc.returncode}): {stderr[-500:]}")
+        raise RuntimeError(f"ffmpeg depth encode failed (rc={proc.returncode}): {stderr[-500:]}")
 
     progress("depth", 1.0, "Done")
     log.info(f"Depth colormap complete: {output_path}")
@@ -175,14 +172,13 @@ async def process_recording(
     imu_path: Path,
     progress: ProgressCallback = _noop_progress,
 ):
-    """Run full processing pipeline in a thread."""
-    progress("rgb", 0.0, "Starting RGB transcode")
-    await asyncio.to_thread(process_rgb, mcap_path, rgb_path, progress)
+    """Run all three processing stages in parallel."""
+    progress("processing", 0.0, "Starting parallel processing")
 
-    progress("depth", 0.0, "Starting depth colormap")
-    await asyncio.to_thread(process_depth, mcap_path, depth_path, progress)
-
-    progress("imu", 0.0, "Starting IMU extraction")
-    await asyncio.to_thread(process_imu, mcap_path, imu_path, progress)
+    await asyncio.gather(
+        asyncio.to_thread(process_rgb, mcap_path, rgb_path, progress),
+        asyncio.to_thread(process_depth, mcap_path, depth_path, progress),
+        asyncio.to_thread(process_imu, mcap_path, imu_path, progress),
+    )
 
     progress("done", 1.0, "Processing complete")
