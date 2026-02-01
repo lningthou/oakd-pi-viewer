@@ -52,7 +52,9 @@ def _upload_results(recording_id: str):
 def process_one(recording_id: str):
     """Download and process a single recording."""
     if cache.is_processed(recording_id):
-        log.info(f"Already processed: {recording_id}")
+        log.info(f"Already processed locally, uploading: {recording_id}")
+        _upload_results(recording_id)
+        log.info(f"Done (upload only): {recording_id}")
         return
 
     cache.ensure_dir(recording_id)
