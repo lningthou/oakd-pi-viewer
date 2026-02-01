@@ -63,19 +63,25 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     log.info(f"RGB remux complete: {output_path}")
 
 
-def _build_depth_lut(max_mm: int = 10000) -> np.ndarray:
+def _build_depth_lut(max_mm: int = 5000) -> np.ndarray:
     """Precompute a uint16→BGR lookup table using turbo colormap.
 
     Returns a (65536, 3) uint8 array. Index with depth_frame directly
     to get colored BGR output in one operation.
+    Index 0 maps to black (no depth return).
+    Non-zero values are inverted so close=warm (red), far=cool (blue).
     """
-    gray = np.zeros(65536, dtype=np.uint8)
     indices = np.arange(65536, dtype=np.float32)
-    clipped = np.clip(indices, 0, max_mm)
-    gray[:] = (clipped / max_mm * 255).astype(np.uint8)
-    # applyColorMap expects (N, 1) uint8 input
+    # Normalize: 1..max_mm -> 0..255, clamp beyond max_mm
+    normalized = np.clip(indices, 0, max_mm) / max_mm * 255
+    # Invert so close objects are warm colors (red/yellow), far are cool (blue)
+    gray = (255 - normalized).astype(np.uint8)
+    # Apply colormap
     colored = cv2.applyColorMap(gray.reshape(-1, 1), cv2.COLORMAP_TURBO)
-    return colored.reshape(-1, 3)  # (65536, 3) BGR
+    lut = colored.reshape(-1, 3)  # (65536, 3) BGR
+    # Zero = no data = render as black
+    lut[0] = [0, 0, 0]
+    return lut
 
 
 # Build once at import time
