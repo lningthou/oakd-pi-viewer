@@ -96,18 +96,26 @@ async def _run_processing(job_id: str, recording_id: str, event_queue: asyncio.Q
         mcap_path = cache.get_mcap_path(recording_id)
 
         # Find the .mcap file in the recording folder
+        # Remove stale 0-byte files from previous failed downloads
+        if mcap_path.exists() and mcap_path.stat().st_size == 0:
+            mcap_path.unlink()
+
         if not mcap_path.exists():
             await event_queue.put({"stage": "download", "progress": 0, "detail": "Finding MCAP file"})
             listing = await asyncio.to_thread(s3.list_prefix, recording_id)
             mcap_key = None
+            mcap_size = 0
             for f in listing.get("files", []):
                 if f["name"].endswith(".mcap"):
                     mcap_key = f["key"]
+                    mcap_size = f.get("size", 0)
                     break
             if not mcap_key:
                 raise ValueError(f"No .mcap file found in {recording_id}")
+            if mcap_size == 0:
+                raise ValueError(f"Recording MCAP file is empty (0 bytes) — this recording may have been aborted")
 
-            await event_queue.put({"stage": "download", "progress": 0.1, "detail": "Downloading MCAP"})
+            await event_queue.put({"stage": "download", "progress": 0.1, "detail": f"Downloading MCAP ({mcap_size / 1e9:.1f} GB)"})
             await asyncio.to_thread(s3.download_file, mcap_key, mcap_path)
             await event_queue.put({"stage": "download", "progress": 1.0, "detail": "Download complete"})
 
