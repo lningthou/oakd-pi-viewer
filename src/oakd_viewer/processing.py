@@ -63,33 +63,33 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     log.info(f"RGB remux complete: {output_path}")
 
 
-def _build_depth_lut(max_mm: int = 5000) -> np.ndarray:
-    """Precompute a uint16→BGR lookup table using turbo colormap.
+def _colorize_depth(depth: np.ndarray, min_mm: int = 200, max_mm: int = 3000) -> np.ndarray:
+    """Convert a uint16 depth frame to a BGR colorized image.
 
-    Returns a (65536, 3) uint8 array. Index with depth_frame directly
-    to get colored BGR output in one operation.
-    Index 0 maps to black (no depth return).
-    Non-zero values are inverted so close=warm (red), far=cool (blue).
+    Applies median + gaussian filtering to reduce stereo noise,
+    normalizes to min_mm..max_mm range, and applies inferno colormap.
+    Zero pixels (no depth return) are rendered as black.
+    Close objects are warm (yellow/white), far objects are cool (dark purple).
     """
-    indices = np.arange(65536, dtype=np.float32)
-    # Normalize: 1..max_mm -> 0..255, clamp beyond max_mm
-    normalized = np.clip(indices, 0, max_mm) / max_mm * 255
-    # Invert so close objects are warm colors (red/yellow), far are cool (blue)
-    gray = (255 - normalized).astype(np.uint8)
-    # Apply colormap
-    colored = cv2.applyColorMap(gray.reshape(-1, 1), cv2.COLORMAP_TURBO)
-    lut = colored.reshape(-1, 3)  # (65536, 3) BGR
-    # Zero = no data = render as black
-    lut[0] = [0, 0, 0]
-    return lut
+    # Spatial filtering to reduce stereo matching noise
+    filtered = cv2.medianBlur(depth, 5)
+    filtered = cv2.GaussianBlur(filtered.astype(np.float32), (5, 5), 0)
 
+    mask = filtered > 0
+    norm = np.zeros_like(filtered, dtype=np.float32)
+    norm[mask] = np.clip((filtered[mask] - min_mm) / (max_mm - min_mm), 0, 1)
 
-# Build once at import time
-_DEPTH_LUT = _build_depth_lut()
+    # Invert so close = warm, far = cool
+    gray = (255 * (1.0 - norm)).astype(np.uint8)
+    gray[~mask] = 0
+
+    colored = cv2.applyColorMap(gray, cv2.COLORMAP_INFERNO)
+    colored[~mask] = [0, 0, 0]
+    return colored
 
 
 def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback = _noop_progress):
-    """Extract LZ4-compressed depth frames, apply turbo colormap, encode to H.264 MP4."""
+    """Extract LZ4-compressed depth frames, filter, apply colormap, encode to H.264 MP4."""
     total = count_messages(mcap_path, "/oak/depth")
     if total == 0:
         raise ValueError("No depth messages found in MCAP")
@@ -116,15 +116,13 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     frame_bytes = w * h * 2  # uint16
-    lut = _DEPTH_LUT
 
     try:
         for i, (ts, data) in enumerate(iter_messages(mcap_path, "/oak/depth")):
             raw = lz4f.decompress(data)
             depth = np.frombuffer(raw[:frame_bytes], dtype=np.uint16).reshape(h, w)
 
-            # Single LUT index replaces clip + normalize + applyColorMap
-            colored = lut[depth]
+            colored = _colorize_depth(depth)
             proc.stdin.write(colored.tobytes())
 
             if i % 30 == 0:
