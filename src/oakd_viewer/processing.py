@@ -63,6 +63,25 @@ def process_rgb(mcap_path: Path, output_path: Path, progress: ProgressCallback =
     log.info(f"RGB remux complete: {output_path}")
 
 
+def _build_depth_lut(max_mm: int = 10000) -> np.ndarray:
+    """Precompute a uint16→BGR lookup table using turbo colormap.
+
+    Returns a (65536, 3) uint8 array. Index with depth_frame directly
+    to get colored BGR output in one operation.
+    """
+    gray = np.zeros(65536, dtype=np.uint8)
+    indices = np.arange(65536, dtype=np.float32)
+    clipped = np.clip(indices, 0, max_mm)
+    gray[:] = (clipped / max_mm * 255).astype(np.uint8)
+    # applyColorMap expects (N, 1) uint8 input
+    colored = cv2.applyColorMap(gray.reshape(-1, 1), cv2.COLORMAP_TURBO)
+    return colored.reshape(-1, 3)  # (65536, 3) BGR
+
+
+# Build once at import time
+_DEPTH_LUT = _build_depth_lut()
+
+
 def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback = _noop_progress):
     """Extract LZ4-compressed depth frames, apply turbo colormap, encode to H.264 MP4."""
     total = count_messages(mcap_path, "/oak/depth")
@@ -89,18 +108,15 @@ def process_depth(mcap_path: Path, output_path: Path, progress: ProgressCallback
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     frame_bytes = w * h * 2  # uint16
+    lut = _DEPTH_LUT
 
     try:
         for i, (ts, data) in enumerate(iter_messages(mcap_path, "/oak/depth")):
             raw = lz4f.decompress(data)
             depth = np.frombuffer(raw[:frame_bytes], dtype=np.uint16).reshape(h, w)
 
-            # Clip at 10m (10000mm) for better indoor contrast
-            clipped = np.clip(depth, 0, 10000)
-            normalized = (clipped / 10000 * 255).astype(np.uint8)
-
-            # Apply turbo colormap (BGR output)
-            colored = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
+            # Single LUT index replaces clip + normalize + applyColorMap
+            colored = lut[depth]
             proc.stdin.write(colored.tobytes())
 
             if i % 30 == 0:
