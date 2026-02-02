@@ -4,7 +4,6 @@
   // DOM refs
   const $ = (sel) => document.querySelector(sel);
   const fileTree = $("#file-tree");
-  const breadcrumb = $("#breadcrumb");
   const emptyState = $("#empty-state");
   const recordingView = $("#recording-view");
   const progressOverlay = $("#progress-overlay");
@@ -24,7 +23,6 @@
   const infoFps = $("#info-fps");
   const infoResolution = $("#info-resolution");
 
-  let currentPrefix = "";
   let currentRecording = null;
   let imuData = null;
   let accelChart = null;
@@ -33,13 +31,11 @@
 
   // ── S3 Browsing ──
 
-  async function browse(prefix) {
-    currentPrefix = prefix;
-    renderBreadcrumb(prefix);
+  async function browse() {
     fileTree.innerHTML = '<div class="tree-loading">Loading</div>';
 
     try {
-      const res = await fetch(`/api/browse?prefix=${encodeURIComponent(prefix)}`);
+      const res = await fetch(`/api/browse?prefix=`);
       const data = await res.json();
       renderTree(data);
     } catch (err) {
@@ -47,85 +43,32 @@
     }
   }
 
-  function renderBreadcrumb(prefix) {
-    const parts = prefix ? prefix.split("/").filter(Boolean) : [];
-    let html = '<span class="breadcrumb-seg" data-prefix="">root</span>';
-    let accumulated = "";
-    for (const part of parts) {
-      accumulated += (accumulated ? "/" : "") + part;
-      html += `<span class="breadcrumb-sep">/</span>`;
-      html += `<span class="breadcrumb-seg" data-prefix="${accumulated}">${part}</span>`;
-    }
-    breadcrumb.innerHTML = html;
-    breadcrumb.querySelectorAll(".breadcrumb-seg").forEach((el) => {
-      el.addEventListener("click", () => browse(el.dataset.prefix));
-    });
-  }
-
   function renderTree(data) {
-    const { folders, files } = data;
-    if (!folders.length && !files.length) {
-      fileTree.innerHTML = '<div class="tree-empty">Empty folder</div>';
+    const { folders } = data;
+    if (!folders.length) {
+      fileTree.innerHTML = '<div class="tree-empty">No recordings found</div>';
       return;
     }
 
     let html = "";
-
-    // Check if any file is .mcap — if so, this is a recording folder
-    const hasMcap = files.some((f) => f.name.endsWith(".mcap"));
-
     for (const folder of folders) {
-      html += `<div class="tree-item" data-action="browse" data-prefix="${folder.prefix}">
-        <span class="tree-icon folder">&#128193;</span>
-        <span class="tree-name">${folder.name}</span>
-      </div>`;
-    }
-
-    for (const file of files) {
-      const isMcap = file.name.endsWith(".mcap");
-      const iconClass = isMcap ? "mcap" : "file";
-      const icon = isMcap ? "&#9673;" : "&#128196;";
-      const size = formatSize(file.size);
-      html += `<div class="tree-item" data-action="${isMcap ? "load" : "none"}" data-key="${file.key}">
-        <span class="tree-icon ${iconClass}">${icon}</span>
-        <span class="tree-name">${file.name}</span>
-        <span class="tree-size">${size}</span>
-      </div>`;
-    }
-
-    // If this is a recording folder, add a "load recording" item at top
-    if (hasMcap) {
-      const recId = currentPrefix;
-      html = `<div class="tree-item" data-action="load-recording" data-recording="${recId}" style="border-bottom: 1px solid var(--c-border-dim); margin-bottom: 4px;">
+      const name = folder.name.replace(/\/$/, "");
+      const isActive = currentRecording === folder.prefix;
+      html += `<div class="tree-item${isActive ? " active" : ""}" data-recording="${folder.prefix}">
         <span class="tree-icon mcap">&#9654;</span>
-        <span class="tree-name" style="color: var(--c-accent-light, var(--c-accent));">Open this recording</span>
-      </div>` + html;
+        <span class="tree-name">${name}</span>
+      </div>`;
     }
 
     fileTree.innerHTML = html;
 
     fileTree.querySelectorAll(".tree-item").forEach((el) => {
       el.addEventListener("click", () => {
-        const action = el.dataset.action;
-        if (action === "browse") {
-          browse(el.dataset.prefix);
-        } else if (action === "load-recording") {
-          loadRecording(el.dataset.recording);
-        } else if (action === "load") {
-          // Clicking an mcap file directly — derive the recording folder
-          const key = el.dataset.key;
-          const recId = key.substring(0, key.lastIndexOf("/"));
-          if (recId) loadRecording(recId);
-        }
+        loadRecording(el.dataset.recording);
+        fileTree.querySelectorAll(".tree-item").forEach((e) => e.classList.remove("active"));
+        el.classList.add("active");
       });
     });
-  }
-
-  function formatSize(bytes) {
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
   }
 
   // ── Recording Loading ──
