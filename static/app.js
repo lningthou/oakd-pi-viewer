@@ -12,7 +12,6 @@
   const progressFill = $("#progress-fill");
   const progressDetail = $("#progress-detail");
   const videoRgb = $("#video-rgb");
-  const videoDepth = $("#video-depth");
   const btnPlay = $("#btn-play");
   const iconPlay = $("#icon-play");
   const iconPause = $("#icon-pause");
@@ -236,11 +235,9 @@
   function onReady(recordingId) {
     hideProgress();
 
-    // Load videos
+    // Load video
     const rgbUrl = `/api/video/rgb/${encodeURIComponent(recordingId)}`;
-    const depthUrl = `/api/video/depth/${encodeURIComponent(recordingId)}`;
     videoRgb.src = rgbUrl;
-    videoDepth.src = depthUrl;
 
     // Load IMU
     loadImu(recordingId);
@@ -256,10 +253,8 @@
   function togglePlay() {
     if (videoRgb.paused) {
       videoRgb.play();
-      videoDepth.play();
     } else {
       videoRgb.pause();
-      videoDepth.pause();
     }
     updatePlayIcon();
   }
@@ -271,18 +266,15 @@
   }
 
   videoRgb.addEventListener("play", () => {
-    videoDepth.play();
     updatePlayIcon();
     startSyncLoop();
   });
 
   videoRgb.addEventListener("pause", () => {
-    videoDepth.pause();
     updatePlayIcon();
     stopSyncLoop();
   });
 
-  videoRgb.addEventListener("seeked", syncDepth);
   videoRgb.addEventListener("timeupdate", onTimeUpdate);
 
   videoRgb.addEventListener("loadedmetadata", () => {
@@ -292,18 +284,6 @@
     }
   });
 
-  let depthSeeking = false;
-
-  videoDepth.addEventListener("seeked", () => { depthSeeking = false; });
-
-  function syncDepth() {
-    if (depthSeeking) return;
-    if (Math.abs(videoDepth.currentTime - videoRgb.currentTime) > 0.1) {
-      depthSeeking = true;
-      videoDepth.currentTime = videoRgb.currentTime;
-    }
-  }
-
   function onTimeUpdate() {
     const t = videoRgb.currentTime;
     const d = videoRgb.duration || 1;
@@ -311,7 +291,6 @@
     const pct = (t / d) * 100;
     seekBar.value = Math.round((t / d) * 1000);
     seekFillEl.style.width = pct + "%";
-    syncDepth();
     updateChartCursors(t);
   }
 
@@ -322,7 +301,6 @@
     const d = videoRgb.duration || 1;
     const t = (seekBar.value / 1000) * d;
     videoRgb.currentTime = t;
-    videoDepth.currentTime = t;
     timeCurrent.textContent = formatTime(t);
     seekFillEl.style.width = (seekBar.value / 10) + "%";
     updateChartCursors(t);
@@ -415,7 +393,6 @@
     const getVideoTime = () => videoRgb.currentTime || 0;
     const onChartClick = (t) => {
       videoRgb.currentTime = t;
-      videoDepth.currentTime = t;
     };
 
     const accelEl = $("#chart-accel");
@@ -502,7 +479,6 @@
     const t = chart.posToVal(x, "x");
     if (t >= 0 && t <= (videoRgb.duration || Infinity)) {
       videoRgb.currentTime = t;
-      videoDepth.currentTime = t;
     }
   }
 
