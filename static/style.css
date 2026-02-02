@@ -283,10 +283,14 @@ html, body {
 
 /* Video panel */
 .video-panel {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  display: flex;
+  justify-content: center;
   flex-shrink: 0;
+}
+
+.video-panel .video-container {
+  flex: 1;
+  max-width: 960px;
 }
 
 .video-container {
@@ -525,6 +529,5 @@ html, body {
 /* ── Responsive ── */
 @media (max-width: 900px) {
   :root { --sidebar-w: 220px; }
-  .video-panel { grid-template-columns: 1fr; }
   .imu-panel { grid-template-columns: 1fr; }
 }
