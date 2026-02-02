@@ -40,7 +40,9 @@ def iter_messages(mcap_path: Path, topic: str) -> Iterator[tuple[int, bytes]]:
         with open(mcap_path, "rb") as f:
             reader = NonSeekingReader(f, validate_crcs=False)
             try:
-                for schema, channel, message in reader.iter_messages(topics=[topic]):
+                for schema, channel, message in reader.iter_messages(
+                    topics=[topic], log_time_order=False
+                ):
                     yield message.log_time, message.data
             except Exception as e:
                 log.warning(f"Forward scan stopped early: {e}")
@@ -81,7 +83,7 @@ def get_metadata(mcap_path: Path) -> dict:
         with open(mcap_path, "rb") as f:
             reader = NonSeekingReader(f, validate_crcs=False)
             try:
-                for schema, channel, message in reader.iter_messages():
+                for schema, channel, message in reader.iter_messages(log_time_order=False):
                     count += 1
                     topics.add(channel.topic)
                     if first_ts is None:
@@ -125,7 +127,9 @@ def count_messages(mcap_path: Path, topic: str) -> int:
     with open(mcap_path, "rb") as f:
         reader = NonSeekingReader(f, validate_crcs=False)
         try:
-            for schema, channel, message in reader.iter_messages(topics=[topic]):
+            for schema, channel, message in reader.iter_messages(
+                    topics=[topic], log_time_order=False
+                ):
                 count += 1
         except Exception:
             pass
