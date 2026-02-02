@@ -290,7 +290,7 @@ html, body {
 
 .video-panel .video-container {
   flex: 1;
-  max-width: 960px;
+  max-width: 680px;
 }
 
 .video-container {
