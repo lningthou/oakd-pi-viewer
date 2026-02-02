@@ -122,12 +122,16 @@ def process_one(recording_id: str, s3_files: dict[str, dict] | None = None):
 def run():
     """Poll S3 for unprocessed recordings and process them."""
     log.info("Pre-processor starting, polling for new recordings...")
+    failed: set[str] = set()  # Skip recordings that have permanently failed
 
     while True:
         try:
             listing = s3.list_prefix("")
             for folder in listing.get("folders", []):
                 recording_id = folder["prefix"]
+
+                if recording_id in failed:
+                    continue
 
                 # Check what outputs exist in S3
                 rec_listing = s3.list_prefix(recording_id)
@@ -149,7 +153,8 @@ def run():
                 try:
                     process_one(recording_id, s3_files=s3_files)
                 except Exception:
-                    log.exception(f"Failed to process {recording_id}")
+                    log.exception(f"Failed to process {recording_id}, skipping permanently")
+                    failed.add(recording_id)
 
         except Exception:
             log.exception("Poll cycle failed")
